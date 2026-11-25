@@ -1,0 +1,32 @@
+name: compose-test
+on: [push, workflow_dispatch]
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            curl -fs http://localhost:8000/health && exit 0
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Send a correctly signed webhook (must be accepted)
+        run: |
+          BODY='{"ref":"refs/heads/main","repository":{"full_name":"mahmoudcodes-dev/webhook-relay"},"sender":{"login":"ci"},"commits":[{"message":"ci test"}]}'
+          SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac 'dev-secret-change-me' | awk '{print $2}')"
+          curl -fs -X POST http://localhost:8000/webhook/github \
+            -H 'Content-Type: application/json' \
+            -H "X-Hub-Signature-256: $SIG" \
+            -H 'X-GitHub-Event: push' \
+            -H 'X-GitHub-Delivery: ci-1' \
+            -d "$BODY"
+      - name: Send an unsigned webhook (must be rejected with 401)
+        run: |
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/webhook/github \
+            -H 'Content-Type: application/json' -d '{}')
+          test "$CODE" = "401"
+      - run: docker compose down -v
